@@ -1,79 +1,91 @@
-# Task 2 — Filtering Strategy Selection and V0 Data Pool
+# Task 2 — Filtering Strategy and Data Pool
 
 **Project:** Evaluating Data-Quality Filtering Strategies for Bengali Instruction Tuning
 **Inputs:** PROJECT_BRIEF.md §4 (taxonomy) and §7 (candidate data sources), plus the extraction findings in Task 1.
+**Aligned with:** the submitted write-up, [bengali_filtering_tasks_1-4_humanized.md](bengali_filtering_tasks_1-4_humanized.md) (Task 2).
 
 ---
 
-## Part A — Scoring Every Candidate Strategy in the Taxonomy
+## Part A — Data Pool (as submitted)
 
-Each candidate is scored on four criteria, all High/Medium/Low:
+**Pool: TigerLLM's Bangla-Instruct** (Raihan & Zampieri, 2025): 100,000 native Bengali instruction-response pairs generated through a self-instruct pipeline (500 seed tasks, GPT-4o and Claude-3.5-Sonnet as teacher models).
 
-- **Evidence strength** — how well the literature we actually read (Task 1) supports this strategy working, for instruction data in general.
-- **Implementation cost** — compute, API spend, and engineering effort relative to our stated compute budget (PROJECT_BRIEF §9).
-- **Independence** — how little this strategy's effect is likely to overlap with the others, which matters for the composability question (RQ3).
-- **Bengali relevance** — how specifically this strategy addresses a problem that is known (from Task 1) to be Bengali/script/tokenization-specific, as opposed to a generic instruction-quality problem that happens to also apply to Bengali.
+Every pair in the released set has already passed the authors' multi-stage filter, which checks four things:
 
-| Code | Strategy | Evidence strength | Implementation cost | Independence | Bengali relevance | Overall |
-|---|---|---|---|---|---|---|
-| A1 | Exact / hash-based duplicate removal | High (standard, well-understood) | Low | High | Low (language-agnostic) | Worth doing but not worth reporting as a "finding" — treat as part of basic cleaning (V0), not a tested variant. |
-| A2 | Near-duplicate removal (MinHash+LSH, n-gram overlap) | Medium | Medium | Medium (overlaps with A3) | Low–Medium (n-gram overlap is weaker on Bengali due to different word-boundary and morphology behavior) | **Medium** |
-| A3 | Semantic deduplication (embedding clustering) | Medium (conceptually supported by DEITA's diversity signal, not tested as a standalone intervention anywhere in our set) | Low (cheap once a Bengali-capable embedding model is chosen) | High (distinct mechanism from B/C families) | Medium (self-instruct generation, like TigerLLM's, is a known source of near-duplicate outputs) | **High — recommended** |
-| B1 | Language identification / script purity | Low direct evidence (no paper in our set implements this as a measured filter), but the *problem* it targets is the best-documented Bengali-specific failure mode in Task 1 (script generation errors, code-switching) | Low | High | High | **High** |
-| B2 | Unicode normalization / malformed-text removal | Low direct evidence, same reasoning as B1 | Low | High | High (Bengali ZWJ/ZWNJ and combining-mark errors are a known, distinct failure class from script-purity or translationese) | **High — recommended (paired with B5)** |
-| B3 | Perplexity / LM-likelihood filtering against a Bengali reference LM | Low — no reliable, domain-balanced Bengali reference LM identified yet | High (would require training or sourcing a clean reference LM first — a confound-prone prerequisite) | Low (likely correlates heavily with B1/B5, since translationese and disfluent Bengali both raise perplexity) | Medium | **Low — drop (see rationale below)** |
-| B4 | Heuristic quality rules (length, symbol ratio, repetition, truncation markers) | Medium (standard practice, implicitly present in most cleaning pipelines including TigerLLM's) | Low | Medium (overlaps with B2) | Low (mostly language-agnostic) | **Medium — fold into V0 basic cleaning, not a standalone variant** |
-| B5 | Translationese / MT-artifact detection | Low direct evidence (no paper in our set implements this as a filter), but it is the single most-repeated concern across the Bengali-specific papers we read (BanglaLlama's own authors note translation-loss artifacts; "Too late to train" flags MT bias in existing datasets) | Medium (requires either a translationese classifier or heuristic proxy — needs scoping) | Medium (conceptually close to B1/B2, may need to be reported jointly rather than as a fully separable effect) | High | **High — recommended (paired with B2)** |
-| C1 | LLM-as-judge scoring of instruction/response quality | High (AlpaGasus, DEITA both report strong effects on English) | Medium (API cost for scoring the full pool) | Medium (may overlap with B-family if judge implicitly penalizes disfluent Bengali) | Medium (judge reliability in Bengali is unverified — this is itself part of what we're testing) | **High — recommended** |
-| C2 | Complexity + quality scoring (DEITA-style) | High on English (DEITA) | High (requires training scorer models, per DEITA's own pipeline) | Low (substantially overlaps with C1) | Medium | **Medium — not selected, too costly for our budget given overlap with C1** |
-| C3 | Instruction-following difficulty / loss-based selection | Medium (referenced in the Survey as an existing signal; not deeply tested in our set) | Medium–High (requires running the base model over the pool to get loss signals) | Low (correlates with C1/C2 conceptually) | Low | **Low — not selected** |
-| C4 | Reward-model scoring | Low evidence in our set (Survey mentions it as an existing signal, no paper we read implements it) | High (no ready-made Bengali reward model; would need one trained or adapted) | Medium | Low | **Low — drop, no Bengali reward model available** |
-| C5 | Response-groundedness / instruction–response alignment checks | Low evidence (not implemented by any paper we read) | Medium | Medium | Low | **Low — not selected this round** |
-| C6 | Template-artifact / refusal / degenerate-response removal | Medium (standard hygiene step, implicit in most cleaning pipelines) | Low | Medium (overlaps with B4) | Low | **Medium — fold into V0 basic cleaning** |
-| D1 | Embedding-space coverage maximization | Low direct evidence for Bengali; conceptually related to A3 | Medium | Low (mechanically similar to A3) | Medium | **Low — not selected this round, redundant with A3** |
-| D2 | Task-type / domain balancing | Medium ("Data Diversity Matters," pending full read, is the closest evidence) | Medium | Medium | Low–Medium | **Medium — not selected this round; flagged as the natural next strategy if compute allows a 4th variant** |
+| TigerLLM check | What it does |
+|---|---|
+| Language adherence | Bengali script and word-ratio checks, grammar scoring |
+| Cultural sensitivity | Screens for culturally inappropriate content |
+| Content quality | Response coherence and factual checks |
+| Novelty | Similarity-based deduplication and lexical-diversity checks |
 
-## Part B — Recommendation
-
-**Recommended 2–3 strategies, in the order they should be applied (stacked):**
-
-1. **Semantic deduplication (A3)** — cheapest of the three, most independent of the others, and directly targets a known TigerLLM-style risk (near-duplicate self-instruct outputs) that no paper in our set has measured.
-2. **Language-quality and translationese filtering (B2 Unicode normalization + B5 translationese/MT-artifact detection, applied together as one Family-B step)** — the strategy with the weakest existing evidence base but the strongest Bengali-specific justification; this is the part of the taxonomy the literature (Task 1, Part C) leaves almost entirely untested.
-3. **LLM-as-judge instruction–response quality scoring (C1)** — the strategy with the strongest English precedent (AlpaGasus, DEITA), included specifically to test whether that precedent transfers to Bengali (RQ2) rather than because it is novel.
-
-**What we're dropping, and why:**
-
-- **B3 (perplexity/LM-likelihood filtering) — dropped.** There is no robust, domain-balanced Bengali reference LM identified yet, and building one is itself a research project, not a preprocessing step. Using a weak or narrow reference LM would introduce a domain-matching confound we cannot cleanly separate from the effect we're trying to measure. If a suitable open Bengali LM turns out to exist (verify before fully discarding this), it could become a 4th variant later — but it should not block the current timeline.
-- **C2 (DEITA-style complexity+quality scoring) — not selected, despite strong English evidence.** It requires training separate complexity and quality scorer models per DEITA's own pipeline, which is a heavier compute/engineering cost than our budget supports, and its effect substantially overlaps with the simpler C1 LLM-judge approach. If C1 alone shows a strong effect, C2 is not worth the added cost; if C1 shows a weak or unreliable effect in Bengali, that is itself evidence C2 would likely fail the same way (same underlying judge-model dependency).
-- **D2 (task-type/domain balancing) — held in reserve, not dropped outright.** "Data Diversity Matters for Robust Instruction Tuning" is suggestive evidence but still a partial extraction (see Task 1). Recommend completing that paper's full read before deciding whether D2 becomes a 4th variant; for now, three stacked variants (A3 → B2/B5 → C1) is a defensible, budget-fitting spread per PROJECT_BRIEF §4's own guidance (cheap, independent, Bengali-sensitive).
-
-This gives one strategy from Family A, one combined step from Family B, and one from Family C — matching the spread PROJECT_BRIEF §4 recommends, now justified against the actual extracted evidence rather than asserted.
+**Decision on the baseline question.** An earlier draft flagged a choice: use the unfiltered BanglaLlama pools (Bangla-Orca / Bangla-Alpaca) as V0, or use Bangla-Instruct even though it is already filtered. The submission takes the second option. Bangla-Instruct is the pool, and TigerLLM's own release (all 100K) is the baseline (Task 3, Arm A). The question is therefore: **does score-based re-selection improve on an already-filtered pool?**, not "does filtering beat no filtering?" BanglaLlama's pools are no longer used for training. They stay in Task 1 only as background on machine-translated Bengali data.
 
 ---
 
-## Part C — V0 Data Pool Confirmation
+## Part B — How the Taxonomy Maps onto TigerLLM's Filter (as submitted)
 
-**Primary pool (confirmed as our focus per direction to prioritize the TigerLLM ecosystem):**
+Three of TigerLLM's four checks already cover three steps from our taxonomy:
 
-- **Bangla-Instruct** (TigerLLM) — ~100K instruction–response pairs, expanded from 500 volunteer-curated seed tasks via GPT-4o/Claude-3.5-Sonnet self-instruct generation with the authors' own multi-stage filtering already applied. This is our core pool precisely because it is *already* filtered by TigerLLM's own pipeline — our baseline (V0) needs to be defined carefully here (see note below).
+| Our taxonomy step | Covered by TigerLLM check | Status in our pipeline |
+|---|---|---|
+| Semantic deduplication (A3) | Novelty | Already applied, kept as a pre-filter |
+| Script and translationese filtering (B1/B2/B5) | Language adherence | Already applied, kept as a pre-filter |
+| LLM-as-judge quality scoring, response (C1) | Content quality | Already applied as a binary pass/fail. We re-score it as a graded *q* (below) |
 
-**Secondary/comparison pool, for the unfiltered-baseline contrast the thesis argues from:**
+What TigerLLM's pipeline **doesn't** do is score instruction complexity separately from response quality, or apply an explicit diversity-aware selection step over a combined score. That's the gap this project's filtering strategy fills.
 
-- **Bangla-Orca** (BanglaLlama) — 172K samples, machine-translated from OpenOrca via Google Cloud Translation API, explicitly *not* quality-filtered by its authors (only random human spot-checks). This is the closest thing in our literature set to a true "raw, unfiltered" Bengali instruction pool, and is a stronger match for a genuine V0 baseline than Bangla-Instruct is.
-- **Bangla-Alpaca** (BanglaLlama) — 52K pairs, same translation pipeline, same lack of filtering.
+---
 
-**Important scoping note (this needs a decision before Meeting/submission, not after):** TigerLLM's Bangla-Instruct is not an unfiltered pool — the source paper already applies its own multi-stage filtering during generation. If we treat Bangla-Instruct as V0, our "V0 baseline" is already partially filtered by someone else's undocumented criteria, which muddies what our own filtering variants (V1–V3) are being measured against. Two options:
-1. Use **Bangla-Orca / Bangla-Alpaca (BanglaLlama, genuinely unfiltered)** as V0, and treat Bangla-Instruct's published numbers as an external reference point / sanity check, not as our own baseline.
-2. Use **Bangla-Instruct as V0 anyway**, but explicitly document it as "V0 = TigerLLM's own filtered pool" in the write-up, reframing the contribution as "do *additional* filtering interventions improve on an already-filtered pool" rather than "does filtering beat no filtering." This is a weaker but still valid framing.
+## Part C — Filtering Strategy (as submitted)
 
-Recommend option 1 for the main experiment (a true unfiltered-vs-filtered contrast is the stronger, more publishable claim) with Bangla-Instruct used as a secondary comparison arm — but this is exactly the kind of decision that should be confirmed with the supervisor, since it changes what "our baseline" means.
+The strategy borrows DEITA's (Liu et al., 2024) score-first, diversity-aware framework:
 
-**License / provenance items to verify before any of this pool is used for training (do not assume from memory — PROJECT_BRIEF §7's own recording requirement):**
+1. **Complexity scoring.** An LLM-as-judge complexity score *c(i)* for each instruction, following DEITA's Evol-Complexity approach.
+2. **Combined scoring.** Score *s = c × q*, where *q* is the response-quality score. This is DEITA's published formula (complexity × quality), not "quality squared." Squaring quality alone would drop the complexity signal entirely, which contradicts the task note's instruction to use quality and complexity together. *(Flagged in the submission in case a quality-only, squared score was actually what was intended. This needs supervisor confirmation.)*
+3. **Diversity-aware selection.** Rank the pool by *s*, then greedily add pairs whose embedding distance to every already-selected pair exceeds a threshold *τ*, continuing until the target subset size is reached (40K in Task 3). This is DEITA's diversity step.
 
-- [ ] Bangla-Instruct Hugging Face repository license terms (check the actual dataset card at the `md-nishat-008` / TigerLLM Hugging Face collection — do not assume MIT/Apache without checking).
-- [ ] Whether Bangla-Instruct pairs are tagged by generation source (GPT-4o vs. Claude-3.5-Sonnet) in the released data, since teacher-model identity is itself a provenance variable per PROJECT_BRIEF §7.
-- [ ] Bangla-Orca / Bangla-Alpaca Hugging Face license terms, and whether Google Cloud Translation API's terms of service impose any restriction on redistributing or further processing translated output at scale.
-- [ ] CulturaX Bengali subset license, if we end up needing a reference corpus for anything downstream (not currently needed since B3/perplexity filtering was dropped).
-- [ ] Row-count and split verification for both pools by actually opening the files — do not cite the paper's reported sizes (172K / 52K / 100K) as final without confirming what's actually downloadable today, since dataset cards sometimes differ from paper-reported figures.
+**Result:** a re-ranked, re-selected subset of Bangla-Instruct, chosen by complexity × quality plus diversity. It replaces TigerLLM's original approach of keeping everything that passes the binary filter. The semantic-dedup and script/translationese stages TigerLLM already applied stay in effect as a pre-filter on the pool itself.
 
-None of these have been checked yet — they are leads from the papers, not confirmed facts, per PROJECT_BRIEF §7's own instruction not to cite sizes or licenses from memory.
+**How this differs from DEITA itself:** DEITA trains separate LLaMA-7B scorer models for complexity and quality. We score both with **LLM-as-judge prompts** directly. That removes the cost that ruled out C2 in the earlier draft (see Part D), at the price of depending on how reliable the judge is in Bengali, which the Task 4 pilot checks first.
+
+---
+
+## Part D — Status of Every Candidate Strategy in the Taxonomy
+
+Each candidate was originally scored on evidence strength, implementation cost, independence, and Bengali relevance (High/Medium/Low). The table below keeps those scores where they still hold and records each strategy's status in the submitted design. An earlier draft recommended a stacked A3 → B2/B5 → C1 pipeline on BanglaLlama's unfiltered data. That plan no longer applies: on Bangla-Instruct, TigerLLM's filter already covers A3, B, and C1.
+
+| Code | Strategy | Evidence strength | Implementation cost | Bengali relevance | Status in submitted design |
+|---|---|---|---|---|---|
+| A1 | Exact / hash-based duplicate removal | High | Low | Low | Basic hygiene. Covered by TigerLLM's novelty check |
+| A2 | Near-duplicate removal (MinHash+LSH, n-gram) | Medium | Medium | Low–Medium | Covered by TigerLLM's novelty check (lexical-diversity) |
+| A3 | Semantic deduplication (embedding clustering) | Medium | Low | Medium | **Pre-filter, already applied** (TigerLLM novelty check) |
+| B1 | Language identification / script purity | Low direct, best-documented Bengali problem | Low | High | **Pre-filter, already applied** (TigerLLM language adherence) |
+| B2 | Unicode normalization / malformed-text removal | Low direct | Low | High | **Pre-filter, already applied** (TigerLLM language adherence) |
+| B3 | Perplexity filtering against a Bengali reference LM | Low | High (no reliable Bengali reference LM) | Medium | Dropped. No suitable reference LM, and it would add a domain confound |
+| B4 | Heuristic quality rules (length, symbols, repetition) | Medium | Low | Low | Basic hygiene. Implicit in TigerLLM's pipeline |
+| B5 | Translationese / MT-artifact detection | Low direct, most-repeated Bengali concern | Medium | High | **Pre-filter, already applied** (TigerLLM language adherence). Lower risk anyway, since Bangla-Instruct is natively generated, not translated |
+| C1 | LLM-as-judge response-quality scoring | High (AlpaGasus, DEITA) | Medium (API cost) | Medium (judge reliability in Bengali unverified) | **Selected as the *q* component.** TigerLLM's binary check is already applied. We re-score *q* on a graded scale. Arm D (quality-only) tests it alone |
+| C2 | Complexity + quality scoring (DEITA-style) | High on English | Medium. LLM-judge prompts replace DEITA's trained scorers | Medium | **Selected, core of the strategy** (*s = c × q*). Earlier rejected as too costly because it needed trained scorers. That objection no longer applies |
+| C3 | Instruction-following difficulty / loss-based | Medium | Medium–High | Low | Not selected |
+| C4 | Reward-model scoring | Low | High (no Bengali reward model) | Low | Dropped |
+| C5 | Response-groundedness / alignment checks | Low | Medium | Low | Not selected. Partly covered by TigerLLM's factual checks |
+| C6 | Template-artifact / refusal / degenerate removal | Medium | Low | Low | Basic hygiene |
+| D1 | Embedding-space coverage maximization | Low for Bengali (DEITA on English) | Medium | Medium | **Selected as the diversity step** (greedy selection with threshold *τ*). Arm E (no diversity) tests whether it helps |
+| D2 | Task-type / domain balancing | Medium ("Data Diversity Matters", partial read) | Medium | Low–Medium | Not selected. Worth checking post hoc, given AlpaGasus's category-collapse risk (see Task 3 threats) |
+
+**In short:** our experimental variables are complexity (C2), quality (C1), and diversity (D1). Deduplication and language quality (A3, B) are held fixed as TigerLLM's pre-filter.
+
+---
+
+## Part E — License / Provenance Items to Verify Before Training
+
+These must be checked against the actual files and dataset cards, not taken from memory (PROJECT_BRIEF §7):
+
+- [ ] Bangla-Instruct Hugging Face license terms (TigerLLM / `md-nishat-008` collection dataset card).
+- [ ] Whether Bangla-Instruct pairs are tagged by teacher model (GPT-4o vs. Claude-3.5-Sonnet). This matters for the judge-circularity threat in Task 3 if our judge is from either family.
+- [ ] Row count and fields of the downloadable release. Confirm it is actually 100K before fixing the 40K subset size, and check whether TigerLLM's filter scores are included or only the pass/fail outcome.
+- [ ] Terms of use for whichever judge-model API scores *c* and *q* (output usage for training-data selection).
+- [ ] License of the embedding model chosen for the diversity step.
+
+No longer needed: Bangla-Orca / Bangla-Alpaca and CulturaX license checks, since neither is used for training in the submitted design.

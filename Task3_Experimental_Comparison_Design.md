@@ -1,65 +1,99 @@
-# Task 3 — Experimental Comparison Design
+# Task 3 — Initial Experimental Comparison
 
 **Project:** Evaluating Data-Quality Filtering Strategies for Bengali Instruction Tuning
-**Builds on:** Task 2's recommended strategies (semantic deduplication → language-quality/translationese filtering → LLM-as-judge quality scoring) and PROJECT_BRIEF §5–6.
+**Builds on:** Task 2's strategy (complexity × quality scoring + diversity-aware selection on Bangla-Instruct) and PROJECT_BRIEF §5–6.
+**Aligned with:** the submitted write-up, [bengali_filtering_tasks_1-4_humanized.md](bengali_filtering_tasks_1-4_humanized.md) (Task 3). Parts A–C are as submitted. Parts D–E are supporting notes that go beyond the submission.
+
+This sets up the first controlled comparison, anchored to TigerLLM. Its released dataset, base model, fine-tuning recipe, and evaluation suite all stay fixed, and only the data-selection method varies. That isolates the variable Task 1 flags as untested.
 
 ---
 
-## Part A — Variant Matrix
+## Part A — Fixed Elements (Anchored to TigerLLM)
 
-**Comparison unit decided:** equal example count. Justification — our filtering strategies each have a different, unpredictable retention rate (we don't yet know what fraction semantic dedup or translationese filtering will remove), so fixing token count instead would silently let variants differ in how many distinct examples they see, and fixing compute would conflate filtering-strategy effects with training-efficiency effects. Equal example count is the cleanest way to isolate "does this selection of data produce a better model," which is the question this thesis actually asks. This choice should be revisited only if the pilot (Task 4) shows retention rates so extreme that equal-example-count becomes impractical (e.g., a variant would need to reuse examples to hit the target count).
+**Base model:** LLaMA-3.2 (1B), TigerLLM's smaller published variant. Full parity would also mean testing the Gemma-2 (9B) variant, but that needs the 8×A100 cluster scale TigerLLM used for continual pretraining. The 1B path is what's feasible on available compute. 9B is a stretch goal.
 
-| Run | Description | Source pool | Size relative to V0 | Purpose |
-|---|---|---|---|---|
-| **V0 — Baseline** | Basic cleaning only: exact-duplicate removal, empty/malformed row stripping, Unicode normalization to a single canonical form. No quality judgment applied. | Bangla-Orca + Bangla-Alpaca (BanglaLlama), per Task 2's V0 decision | 100% (full cleaned pool) | The floor every variant is measured against. |
-| **V1** | V0 + semantic deduplication (near-duplicate removal via embedding-similarity clustering) | V0 output | Retained size (≤100%, exact % determined empirically) | Tests whether removing embedding-near-duplicate examples alone improves downstream performance. |
-| **R1** | Random subset of V0, same size as V1's retained count | V0 | Matched to V1 | Isolates whether V1's effect (if any) is a quality effect or just a smaller-pool-size effect. |
-| **V2** | V1 + language-quality and translationese filtering (Unicode/script-purity cleanup + translationese/MT-artifact detection) | V1 output | Retained size (≤ V1's size) | Tests the marginal effect of Bengali-specific language-quality filtering on top of deduplication. |
-| **R2** | Random subset of V0, same size as V2's retained count | V0 | Matched to V2 | Same isolation logic as R1, applied at V2's size. |
-| **V3** | V2 + LLM-as-judge instruction–response quality scoring | V2 output | Retained size (≤ V2's size) | Tests the marginal effect of quality-score filtering on top of the first two interventions. |
-| **R3** | Random subset of V0, same size as V3's retained count | V0 | Matched to V3 | Same isolation logic, applied at V3's size — this is the comparison that most directly answers RQ1. |
-| **Full-data control** | V0 at its full, unfiltered size (same run as V0 above, reported again here for clarity) | V0 | 100% | Measures what each variant gives up in raw volume — answers "is filtering worth the data it throws away." |
+**Fine-tuning recipe:** full fine-tuning, no LoRA, matching TigerLLM's published hyperparameters for the 1B model:
 
-**Held constant across every run (V0, V1–V3, R1–R3):** base model and checkpoint (base, not instruction-tuned — see PROJECT_BRIEF §8), LoRA/QLoRA rank and target modules, learning rate and schedule, number of epochs, maximum sequence length, prompt template, and decoding parameters at evaluation time (temperature, top-p, max new tokens).
+| Hyperparameter | Value |
+|---|---|
+| Max sequence length | 2,048 |
+| Batch size | 16 |
+| Gradient accumulation | 4 |
+| Epochs | 3 |
+| Learning rate | 1e-5 |
+| Weight decay | 0.02 |
+| Warm-up | 10% |
+| Optimizer | AdamW (8-bit) |
+| Schedule | Cosine |
+| Precision | BF16 |
 
-**Seeds:** 3 seeds per run if compute allows (7 runs × 3 seeds = 21 training runs total, at equal example count so training cost per run is roughly comparable). If the Task 4 pilot shows this is not affordable within the compute budget, drop to 1 seed per run — but this must be stated explicitly as a limitation, and no significance claims should be made on 1-seed results.
+**Evaluation suite:** the same six Bangla-specific benchmarks TigerLLM reports, scored as Pass@1 (%), so results sit directly against TigerLLM's own published table:
 
-**Stacking, not independent testing:** V1→V2→V3 are deliberately stacked (each variant is built on the previous one's output) rather than three independent single-strategy runs. This directly targets RQ3 (do interventions compose) — the marginal gain from V1→V2 and V2→V3 is itself the measurement of composability, which Task 1's gap synthesis identified as the weakest-evidenced sub-question in the existing literature.
-
----
-
-## Part B — Threat Audit
-
-**Contamination.** Our evaluation benchmarks (Task 1's "Too late to train" 7-task compilation, and "Evaluating LLMs' Multilingual Capabilities for Bengali") are themselves built partly from machine-translated English sources — the same class of process (Google Translate / GPT-4o-mini translation) used to build parts of our training pool (Bangla-Orca, Bangla-Alpaca). Before finalizing the evaluation set, we must check for direct overlap between benchmark source sentences and training-pool source sentences (e.g., did both draw from overlapping OpenOrca/Alpaca English source text before translation). If either benchmark's underlying English source overlaps with OpenOrca or Alpaca, that benchmark is contaminated for our purposes and must be dropped or replaced.
-
-**Circular filter–judge bias.** The C1 quality-scoring step (Task 2, Part B) and any LLM-judge used for open-ended evaluation win-rate scoring (Part C below) must not be the same model family. If both the training-data filter and the evaluation judge are, say, GPT-4o-based, then a variant that happens to produce GPT-4o-flavored text could win both the filtering step and the evaluation step for reasons that have nothing to do with actual Bengali quality — the model would just be agreeing with itself. Decision to record before running anything: name the filter-judge model and the eval-judge model now, confirm they are from different providers/families, and if that's not possible within budget, state the circularity explicitly as a limitation rather than discovering it after results are in.
-
-**Judge reliability in Bengali.** Every LLM-judge step in our pipeline (C1 filtering, and any judge-based evaluation) is weaker and less calibrated in Bengali than in English — this is the same risk PROJECT_BRIEF §6 already flags, and it is not fully separable from the effect we're trying to measure: if V3 (quality-filtered) underperforms V2, we cannot immediately tell whether the underlying data got worse or the judge simply misjudged Bengali quality. Mitigation: report judge agreement with the small human-annotated sample (PROJECT_BRIEF's §Open Decisions item on annotator sample size) as a calibration check before trusting judge-based results at face value.
-
-**Translationese/quality confound between training and evaluation.** If the language-quality filter (V2) is specifically tuned to catch translationese, and part of our evaluation benchmark is itself translationese (machine-translated benchmark questions), V2 and V3 models could score worse on the benchmark simply because they were never trained on the kind of translated phrasing the benchmark uses — not because the underlying model is worse. This needs to be reported as a possible explanation if V2/V3 underperform on translated-benchmark tasks specifically, distinct from a genuine capability loss.
-
-**Tokenizer fertility interacting with equal-example-count comparison.** From "Evaluating LLMs' Multilingual Capabilities for Bengali" (Task 1), Bengali tokenization fertility varies significantly by model family. If filtering systematically changes the average sequence length of retained examples (e.g., translationese filtering disproportionately removes long, awkward machine-translated responses), then two variants with the same *example count* may not have the same *token count* — which is exactly the confound our equal-example-count decision (Part A) was meant to control for, just showing up one level down. Mitigation: report token counts alongside example counts for every variant (PROJECT_BRIEF §5 already requires this), and flag any variant where token count diverges sharply from V0's at the same example count.
+| Benchmark | Capability |
+|---|---|
+| MMLU-bn | Understanding |
+| PangBench-bn | Multitasking |
+| BanglaQuaD | Question answering |
+| mHumanEval-bn | Coding |
+| BEnQA | Knowledge |
+| BanglaRQA | Reasoning |
 
 ---
 
-## Part C — Metric Definitions
+## Part B — Experimental Arms
 
-**Automatic / data-level metrics (measured on the training pool itself, before any model is trained):**
-- **Retention rate** — retained examples ÷ starting pool size, reported per variant, per PROJECT_BRIEF §5's reporting requirement.
-- **Script purity ratio** — fraction of characters in each retained response that fall within the Bengali Unicode block, out of all alphabetic characters; reported as a pool-level average and distribution, not just a mean.
-- **Malformed-Unicode rate** — fraction of retained examples containing unresolved combining-mark or ZWJ/ZWNJ errors after normalization, used as a sanity check that the language-quality filter actually did its job.
-- **Token fertility** — average tokens per Bengali word for the chosen base model's tokenizer, measured on each variant's retained pool, to check whether filtering shifts the pool toward or away from tokenizer-friendly text.
-- **Exact and near-duplicate rate** — measured on V0 (to justify why A3 was worth doing) and on V1 onward (to confirm A3 actually reduced it), using the same similarity threshold used to build V1.
+| Arm | Data size | Selection method | Role |
+|---|---|---|---|
+| **A: TigerLLM anchor** | 100K (full pool) | TigerLLM's original release, no re-filtering | Reproduces the published baseline |
+| **B: Random control** | 40K (matched to C) | Uniform random sample of the 100K pool | Isolates a pure data-size effect from a selection effect |
+| **C: Ours (DEITA-style)** | 40K | complexity × quality score + diversity-aware selection | Tests this project's core hypothesis |
+| **D: Quality-only ablation** | 40K | Top-K by quality score alone | Isolates the contribution of complexity |
+| **E: No-diversity ablation** | 40K | Top-K by complexity × quality, no diversity step | Isolates the contribution of diversity |
 
-**Model output / generation-quality sanity checks (measured on model outputs at evaluation time, not training data):**
-- **Output script purity** — same definition as above, applied to generated responses, to catch models that regress into code-switched or malformed output.
-- **Response length distribution** — mean and spread of generated response length per variant, to catch degenerate over-short or over-long behavior introduced by a variant.
-- **Degenerate-repetition rate** — fraction of generated responses containing detectable repeated n-grams above a fixed threshold.
-- **Refusal rate** — fraction of generated responses that are non-answers/refusals on prompts that should have a substantive answer, to catch a variant that inadvertently trained the model toward over-caution.
+Arms D and E run only if compute budget allows after A–C are complete.
 
-**Downstream performance metrics:**
-- **Knowledge/reasoning benchmark accuracy** — Pass@1 or exact-match accuracy (metric depends on final benchmark choice) on the Bengali benchmark(s) confirmed contamination-free in Part B.
-- **Natural-language-understanding accuracy** — classification/inference accuracy on a stable Bengali NLU task (e.g., XNLI-bn or BanglaParaphrase, contamination-checked), included specifically because it gives a lower-variance signal than open-ended generation, per PROJECT_BRIEF §6.
-- **Open-ended instruction-following win rate** — percentage of held-out Bengali prompts where the variant's response is preferred over the V0 baseline's response by the evaluation judge, with response order swapped across two runs per pair and averaged to control position bias. Report the judge model name, the exact judge prompt, and the swap/averaging procedure alongside the number, per PROJECT_BRIEF §6's recording requirement.
+**How the arms answer the research questions (see Task 1, Part D):**
 
-**Reporting format per variant (every run, every seed):** starting pool size, retained size, retention rate, token count, wall-clock time, every metric above, and seed-to-seed variance where 3 seeds were run. This matches PROJECT_BRIEF §5's reporting requirement exactly and should be the literal column structure of the results table in the final write-up.
+- **C vs. B** (same size, different selection): is there a real selection effect, or is it just data size? (RQ1)
+- **C vs. A** (40K selected vs. 100K full): does a selected subset match or beat the full pool on Bengali, as it does on English? (the core gap / RQ2)
+- **C vs. D** and **C vs. E**: does complexity add anything beyond quality, and does diversity add anything beyond the score ranking? (RQ3)
+
+**Comparison unit:** equal example count (40K) across B–E, with A at full size as the reference. Under a fixed recipe of 3 epochs, a 40K arm trains on 40% of A's examples, so a C ≥ A result also means less training compute.
+
+---
+
+## Part C — Evaluation Metrics
+
+**Primary:** Pass@1 on the six benchmarks above, compared arm-by-arm and against TigerLLM's published numbers.
+
+**Diagnostic:**
+
+- Training loss curves per arm: does a smaller, well-selected set converge faster or lower, as TigerLLM's own findings suggest for quality-first data?
+- Pool-level diagnostics per arm: score distributions (*c*, *q*, *s*), Type-Token Ratio, and embedding-space coverage. These show what "good" Bengali instruction data looks like under this framework.
+
+**Optional (budget-permitting):** pairwise LLM-as-judge win rate between arms on a small held-out instruction set. This is closer to how DEITA itself was evaluated (MT-Bench/AlpacaEval-style) and gives a more direct read on instruction-following quality than the downstream knowledge benchmarks alone. If run: swap response order across two runs per pair and average the results to control position bias, and report the judge model, the exact prompt, and the swap procedure with the number.
+
+---
+
+## Part D — Threat Audit (supporting notes, not in the submission)
+
+**Arm A may not reproduce TigerLLM's published number.** TigerLLM-1B was continually pretrained on Bangla-TextBook *before* fine-tuning on Bangla-Instruct. If we fine-tune raw LLaMA-3.2 (1B), Arm A will likely score below TigerLLM's published table, and the gap would come from pretraining, not data selection. Before running, decide whether we start from TigerLLM's continually pretrained checkpoint (if released) or from base LLaMA-3.2. Either way, compare arms against our own Arm A first, and against the published table second.
+
+**Circular judge bias.** Bangla-Instruct was generated by GPT-4o and Claude-3.5-Sonnet. If the judge scoring *c* and *q* comes from either family, it may favor text in its own style rather than better Bengali. The same applies to the optional pairwise judge, and that judge should not be the same model as the scoring judge. Name both judge models before running. If they cannot be kept apart within budget, state the circularity as a limitation.
+
+**Judge reliability in Bengali.** The whole strategy depends on the LLM judge scoring Bengali instructions and responses consistently. If Arm C underperforms Arm B, we cannot tell at first whether selection doesn't help or the judge misread Bengali quality. Mitigation: the Task 4 consistency check, and ideally judge agreement against a small human-annotated sample.
+
+**Token count differs at equal example count.** Complexity scoring tends to favor longer, multi-part instructions, so Arm C's 40K examples may contain noticeably more tokens than Arm B's 40K. Part of a C > B gain could then come from token volume, not selection. Mitigation: report token counts alongside example counts for every arm (PROJECT_BRIEF §5), and flag large differences. Bengali tokenizer fertility (Task 1, "Evaluating LLMs' Multilingual Capabilities") makes this worse.
+
+**Category imbalance from score-based selection.** AlpaGasus's single-score filter removed coding examples far more often than other categories. Arms C and D could do the same, which would show up as a drop on mHumanEval-bn specifically. Mitigation: compare task-type composition of each arm's 40K against the full pool, and read per-benchmark results, not just the average.
+
+**Benchmark contamination.** Bangla-Instruct was generated by GPT-4o and Claude-3.5-Sonnet, and several benchmarks (e.g., MMLU-bn) are translations of public English sets. Check for overlap between benchmark items and Bangla-Instruct before final evaluation. This affects all arms equally, but it can inflate absolute numbers compared with TigerLLM's table.
+
+---
+
+## Part E — Open Items Not Specified in the Submission
+
+- **Seeds.** Not stated. Recommend 3 seeds per arm if compute allows. With 1 seed, make no significance claims and state this as a limitation.
+- **Choice of 40K.** Not justified in the submission. Confirm it against the real pool size (Task 2, Part E). Keep the threshold *τ* loose enough that the diversity step can actually reach 40K.
+- **Judge and embedding models.** Not named yet. The Task 4 pilot should settle both.
+- **Reporting format per arm:** pool size, selected size, token count, wall-clock time, Pass@1 on each benchmark, diagnostics, and seed variance where available (PROJECT_BRIEF §5).

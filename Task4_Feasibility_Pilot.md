@@ -1,43 +1,44 @@
-# Task 4 — Feasibility Pilot
+# Task 4 — Small-Scale Feasibility Test
 
 **Project:** Evaluating Data-Quality Filtering Strategies for Bengali Instruction Tuning
-**Purpose:** the smallest run that could falsify the pipeline design in Tasks 2–3 before committing the full compute budget to it.
+**Purpose:** before scoring the full 100K pool or committing to a full fine-tuning run, check that the pipeline works on Bengali text end to end.
+**Aligned with:** the submitted write-up, [bengali_filtering_tasks_1-4_humanized.md](bengali_filtering_tasks_1-4_humanized.md) (Task 4). Part A is as submitted. Parts B–C are supporting notes that go beyond the submission.
 
 ---
 
-## Part A — Pilot Specification
+## Part A — Pilot Steps (as submitted)
 
-**What this pilot tests:** not model quality — just whether the *data pipeline itself* (loading the V0 pool, running semantic deduplication, running language-quality/translationese filtering) behaves sanely on real TigerLLM-ecosystem data. No training happens in this pilot.
+1. **Sample a small slice.** Pull 500–1,000 pairs at random from Bangla-Instruct to test every downstream step at low cost.
+2. **Test the LLM-judge scorers on Bengali.** Run the complexity and quality prompts on this slice. Check that the judge model returns consistent, parseable scores directly on Bengali instructions and responses, not on an English translation of them.
+3. **Sanity-check embeddings.** Embed the slice with a multilingual or Bengali-capable sentence-embedding model. Confirm that distances behave sensibly (near-duplicate pairs sit close, unrelated pairs sit far) before trusting the diversity step at scale.
+4. **Run a toy selection pass.** Apply the greedy diversity-aware selection with a small threshold *τ* and budget. Then manually spot-check a handful of selected vs. rejected pairs to confirm the subset actually looks more diverse and higher-quality than a same-size random sample.
+5. **Run a toy fine-tune.** Fine-tune LLaMA-3.2 (1B) with LoRA for a few hundred steps on the small selected slice, only to confirm that the training script, data format, and hardware setup run without errors. This step draws no performance conclusions.
+6. **Record time and cost.** Log the wall-clock time and API/compute cost for scoring the small slice, and extrapolate to the full 100K pool. This catches anything (judge-model cost, embedding time) that needs to change before committing to the full Task 3 run.
 
-**Sample:** 2,000 examples, randomly sampled from the confirmed V0 pool (Bangla-Orca + Bangla-Alpaca, per Task 2's pool decision — pending the license/provenance checks listed there being resolved first, since we should not process data whose terms we haven't confirmed even for a pilot).
-
-**Steps run on the sample:**
-1. Basic cleaning (exact-duplicate removal, malformed-row stripping, Unicode normalization) — this defines the pilot's own V0.
-2. Semantic deduplication (embedding generation + similarity clustering) — produces the pilot's V1.
-3. Language-quality and translationese filtering (script-purity check, Unicode-malformation check, translationese heuristic) — produces the pilot's V2.
-
-**Estimated wall-clock:** approximately 2 hours total on a single mid-range GPU (T4/A10-class) — embedding generation and clustering for 2,000 examples is the dominant cost; the language-quality filtering step is largely CPU-bound and fast at this scale.
-
-**What "success" looks like (the pipeline is sound, proceed to full-scale runs):** retention rates after each step fall in a plausible range (roughly 70–95% surviving semantic dedup, roughly 60–90% of the remainder surviving language-quality filtering — wide ranges deliberately, since we have no prior data point for Bengali specifically), and a manual spot-check of ~30 discarded examples per step confirms they were actually low-quality/duplicate/malformed rather than good examples caught by a broken filter.
+**Note on LoRA vs. full fine-tuning:** the toy fine-tune uses LoRA only to check the pipeline cheaply. The real Task 3 runs use full fine-tuning with TigerLLM's recipe. Once the toy run passes, do one short full-fine-tuning smoke test as well, to confirm memory fits at batch size 16 × gradient accumulation 4 with 2,048-token sequences.
 
 ---
 
-## Part B — Stop-and-Redesign Criteria
+## Part B — Stop-and-Redesign Criteria (supporting notes, not in the submission)
 
-These are the specific results that mean the pipeline itself is broken, not just that the data is noisy — i.e., results that should stop scaling up and trigger a redesign of the filtering step rather than a decision about the data:
+These results mean the pipeline itself is broken, not just that the data is noisy. Any one of them should stop the scale-up and trigger a fix first.
 
-**If semantic deduplication removes more than 60% of the sample:** this would mean either the embedding model is not Bengali-capable (collapsing distinct sentences into near-identical vectors) or the similarity threshold is miscalibrated for Bengali text. Action: before touching the threshold, manually inspect 20 pairs flagged as near-duplicates — if they are not actually near-duplicates in meaning, the embedding model itself is the problem and needs to be swapped for one with verified Bengali performance, not just re-thresholded.
+**Judge scores are not consistent or parseable.** Re-score a subset of ~50 pairs a second time. If scores often move by more than one point on the same input, or a noticeable share of outputs fail to parse, fix the prompt or output format before going further. Do not scale up a noisy scorer, because *s = c × q* multiplies the noise from both scores.
 
-**If the language-quality filter flags more than 50% of the sample as malformed/low-quality:** this is far more likely to mean the Unicode normalizer or script-purity check is misconfigured (e.g., treating valid Bengali conjunct forms as malformed, or mis-handling legitimate Bengali digits/punctuation) than it is to mean half of BanglaLlama's data is genuinely broken — BanglaLlama's own authors reported the data as translation-imperfect, not majority-malformed. Action: immediate review of the normalizer against a small hand-verified set of known-good Bengali sentences before scaling up; do not proceed to full-pool filtering on an unverified normalizer.
+**The judge only works on translated text.** If scores on Bengali inputs are flat (near-constant) or clearly unrelated to quality on a manual check, while English translations of the same pairs score sensibly, then the judge does not read Bengali well enough. Switch to a judge model with better Bengali ability. Scoring translations instead would break the experiment's premise.
 
-**If either step's discarded sample, on manual spot-check, contains clearly good examples being wrongly removed:** even if the aggregate retention-rate numbers look plausible, this is a stop condition on its own — it means the filter is systematically biased in a way that could silently distort the final dataset (echoing AlpaGasus's documented category-collapse failure mode from Task 1). Action: identify what property the wrongly-removed examples share (length, dialect, topic, sentence structure) before re-running at scale.
+**Embeddings fail the near-duplicate test.** If hand-picked near-duplicate pairs are not clearly closer than unrelated pairs, the embedding model is not Bengali-capable. Swap the model. Re-tuning *τ* will not fix this.
 
-**If retention rates differ drastically between Bangla-Orca and Bangla-Alpaca within the same pilot:** since both are built by the same translation pipeline (BanglaLlama, Google Cloud Translation API), a large divergence between the two sub-pools would suggest the filter is reacting to something incidental to one dataset (e.g., formatting differences from the OpenOrca vs. Alpaca source templates) rather than to genuine language quality. Action: check whether the divergence tracks a formatting artifact before concluding it reflects real quality differences.
+**The diversity step cannot reach the budget, or accepts nearly everything.** If at a given *τ* the greedy pass runs out of candidates before the target size, or rejects almost nothing, *τ* is miscalibrated. Find a *τ* range that reaches 40% of the slice (mirroring 40K of 100K) while still rejecting some pairs.
 
-**What does *not* trigger a stop:** moderate retention-rate differences between the two filtering steps, or an overall pool shrinkage that still leaves enough examples for the planned variant sizes (Task 3) — those are expected outcomes the experiment is designed to measure, not failures of the pipeline itself.
+**The selected subset doesn't look better than random.** If the manual spot-check (step 4) finds the selected pairs no better or more diverse than a random sample of the same size, or finds clearly good pairs among the rejected ones, look for what the rejected pairs have in common (length, topic, task type, e.g., coding) before running at scale. This is the AlpaGasus category-collapse risk from Task 1.
+
+**Extrapolated cost exceeds the budget.** If step 6 projects that scoring 100K pairs (two judge calls each, for *c* and *q*) goes beyond the API budget, reduce cost before Task 3: use a cheaper judge, score *c* and *q* in one call, or score only part of the pool.
+
+**What does *not* trigger a stop:** score distributions that are skewed high. Bangla-Instruct is already filtered, so most pairs should score reasonably well. Skew alone is expected. It only becomes a problem if scores no longer separate pairs at all.
 
 ---
 
 ## Part C — Cost and Timeline Note
 
-Given the submission deadline, this pilot should run immediately after Task 2's license/provenance checks are confirmed (do not run it on data whose terms haven't been verified, even for a 2,000-row test). At roughly 2 hours of GPU time and no API spend beyond whatever the language-quality filtering step requires (a rule-based/heuristic approach, not an LLM call, is recommended for the pilot specifically to keep it fast and free of API cost before the full LLM-judge step (C1) is even reached), this pilot fits inside a single working session and should be run before the full experimental matrix (Task 3) is scheduled.
+Run the pilot right after the Bangla-Instruct license and row-count checks (Task 2, Part E) are done. Its main costs are the judge API calls for 500–1,000 pairs (×2 for *c* and *q*) and a short GPU session for embeddings and the toy fine-tune. It should fit inside one working session. The time and cost numbers from step 6 set the budget for the full 100K scoring pass and for deciding whether Arms D and E are affordable (Task 3).
