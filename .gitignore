@@ -1,0 +1,44 @@
+# Kaggle run outputs (downloaded with `kaggle kernels output`, regenerable)
+kaggle_outputs/
+*.log
+
+# Kaggle credentials and secrets
+kaggle.json
+.env
+.env.*
+*.key
+
+# Data and model artifacts
+*.jsonl
+*.parquet
+*.arrow
+*.csv.gz
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+checkpoints/
+wandb/
+data/
+models/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Office lock files
+~$*
